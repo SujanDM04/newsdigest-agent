@@ -101,7 +101,25 @@
         });
         const data = await res.json();
 
+        if (data.error) {
+          status.textContent = data.error;
+          status.style.color = "#dc2626";
+          // Still show articles if they were returned
+          if (data.articles && data.articles.length) {
+            articlesEl.innerHTML = "<h3 style='margin-bottom:10px'>Sources (summary unavailable)</h3>" +
+              data.articles.map(a =>
+                `<div class="article">
+                  <a href="${a.url}" target="_blank">${a.title}</a>
+                  <div class="meta">${a.source} &middot; ${new Date(a.date).toLocaleDateString()}</div>
+                </div>`
+              ).join("");
+            articlesEl.style.display = "block";
+          }
+          return;
+        }
+
         status.textContent = "";
+        status.style.color = "#666";
         summaryEl.textContent = data.summary;
         summaryEl.style.display = "block";
 

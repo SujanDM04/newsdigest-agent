@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from duckduckgo_search import DDGS
@@ -51,10 +52,21 @@ def digest_news(request: TopicRequest):
     )
 
     # Summarize with Ollama
-    response = ollama.chat(
-        model="llama3.1",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    summary = response["message"]["content"]
+    try:
+        response = ollama.chat(
+            model="llama3.1",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = response["message"]["content"]
+    except ConnectionError:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Ollama is not running. Start it with: ollama serve", "articles": articles},
+        )
+    except ollama.ResponseError as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Ollama error: {e.error}", "articles": articles},
+        )
 
     return {"topic": request.topic, "summary": summary, "articles": articles}
