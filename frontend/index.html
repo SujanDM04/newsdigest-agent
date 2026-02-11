@@ -18,7 +18,26 @@
     .search-box {
       display: flex;
       gap: 8px;
+      margin-bottom: 12px;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
       margin-bottom: 24px;
+    }
+    .controls label {
+      font-size: 14px;
+      color: #555;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    select {
+      padding: 6px 10px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: white;
     }
     input {
       flex: 1;
@@ -46,6 +65,7 @@
       margin-bottom: 16px;
       line-height: 1.6;
       display: none;
+      white-space: pre-wrap;
     }
     #articles { display: none; }
     .article {
@@ -69,15 +89,63 @@
     <input type="text" id="topic" placeholder="Enter a topic (e.g. AI news)" />
     <button id="btn" onclick="fetchDigest()">Digest</button>
   </div>
+  <div class="controls">
+    <label>Model
+      <select id="model-select">
+        <option value="">Loading...</option>
+      </select>
+    </label>
+    <label>Articles
+      <select id="count-select">
+        <option value="5">5</option>
+        <option value="10">10</option>
+        <option value="15">15</option>
+      </select>
+    </label>
+  </div>
   <div id="status"></div>
   <div id="summary"></div>
   <div id="articles"></div>
 
   <script>
+    const API = "http://127.0.0.1:8000";
     const input = document.getElementById("topic");
+    const modelSelect = document.getElementById("model-select");
+    const countSelect = document.getElementById("count-select");
+
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") fetchDigest();
     });
+
+    // Load available models on page load
+    async function loadModels() {
+      try {
+        const res = await fetch(`${API}/models`);
+        const data = await res.json();
+        if (data.models && data.models.length) {
+          modelSelect.innerHTML = data.models.map(m =>
+            `<option value="${m}">${m}</option>`
+          ).join("");
+        } else {
+          modelSelect.innerHTML = '<option value="">No models found</option>';
+        }
+      } catch {
+        modelSelect.innerHTML = '<option value="">Failed to load</option>';
+      }
+    }
+    loadModels();
+
+    function renderArticles(articles, label = "Sources") {
+      const articlesEl = document.getElementById("articles");
+      articlesEl.innerHTML = `<h3 style='margin-bottom:10px'>${label}</h3>` +
+        articles.map(a =>
+          `<div class="article">
+            <a href="${a.url}" target="_blank">${a.title}</a>
+            <div class="meta">${a.source} &middot; ${new Date(a.date).toLocaleDateString()}</div>
+          </div>`
+        ).join("");
+      articlesEl.style.display = "block";
+    }
 
     async function fetchDigest() {
       const topic = input.value.trim();
@@ -87,52 +155,71 @@
       const status = document.getElementById("status");
       const summaryEl = document.getElementById("summary");
       const articlesEl = document.getElementById("articles");
+      const model = modelSelect.value;
+      const maxResults = countSelect.value;
 
       btn.disabled = true;
-      status.textContent = "Fetching news and generating digest...";
+      status.textContent = "Fetching news...";
+      status.style.color = "#666";
       summaryEl.style.display = "none";
+      summaryEl.textContent = "";
       articlesEl.style.display = "none";
 
+      const params = new URLSearchParams({ topic, max_results: maxResults });
+      if (model) params.set("model", model);
+
       try {
-        const res = await fetch("http://127.0.0.1:8000/digest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ topic }),
-        });
-        const data = await res.json();
+        const res = await fetch(`${API}/digest/stream?${params}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let summaryStarted = false;
 
-        if (data.error) {
-          status.textContent = data.error;
-          status.style.color = "#dc2626";
-          // Still show articles if they were returned
-          if (data.articles && data.articles.length) {
-            articlesEl.innerHTML = "<h3 style='margin-bottom:10px'>Sources (summary unavailable)</h3>" +
-              data.articles.map(a =>
-                `<div class="article">
-                  <a href="${a.url}" target="_blank">${a.title}</a>
-                  <div class="meta">${a.source} &middot; ${new Date(a.date).toLocaleDateString()}</div>
-                </div>`
-              ).join("");
-            articlesEl.style.display = "block";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete SSE lines
+          let lines = buffer.split("\n");
+          buffer = lines.pop(); // keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.startsWith("event: articles")) {
+              // Next data line has the articles payload — handled below
+              continue;
+            }
+            if (line.startsWith("event: error")) {
+              continue;
+            }
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6);
+
+            if (payload === "[DONE]") {
+              status.textContent = "";
+              break;
+            }
+
+            // Check if this is the articles JSON array
+            if (payload.startsWith("[")) {
+              const articles = JSON.parse(payload);
+              renderArticles(articles);
+              status.textContent = "Generating summary...";
+              continue;
+            }
+
+            // It's a summary token
+            if (!summaryStarted) {
+              summaryEl.style.display = "block";
+              summaryStarted = true;
+            }
+            const token = JSON.parse(payload);
+            summaryEl.textContent += token;
           }
-          return;
         }
-
-        status.textContent = "";
-        status.style.color = "#666";
-        summaryEl.textContent = data.summary;
-        summaryEl.style.display = "block";
-
-        articlesEl.innerHTML = "<h3 style='margin-bottom:10px'>Sources</h3>" +
-          data.articles.map(a =>
-            `<div class="article">
-              <a href="${a.url}" target="_blank">${a.title}</a>
-              <div class="meta">${a.source} &middot; ${new Date(a.date).toLocaleDateString()}</div>
-            </div>`
-          ).join("");
-        articlesEl.style.display = "block";
       } catch (err) {
         status.textContent = "Error: " + err.message;
+        status.style.color = "#dc2626";
       } finally {
         btn.disabled = false;
       }
